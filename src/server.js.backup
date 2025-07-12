@@ -691,7 +691,8 @@ app.use((req, res) => {
   });
 });
 
-// Declare server variable
+// At the end of src/server.js, replace the server section with:
+
 let server;
 
 // Start server only if not in test environment
@@ -731,4 +732,4 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 // Export the app for testing
-module.exports = app;
+module.exports = app;  // Simple export, not { app, server }
