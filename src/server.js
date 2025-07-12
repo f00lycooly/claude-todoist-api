@@ -626,6 +626,86 @@ app.post('/export', async (req, res) => {
   }
 });
 
+// Add GET endpoint for clickable links
+app.get('/quick-export', async (req, res) => {
+  try {
+    if (!req.query.data) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing data parameter' 
+      });
+    }
+
+    const data = JSON.parse(decodeURIComponent(req.query.data));
+    
+    // Use same logic as POST endpoint
+    const { text, projectName = config.defaultProjectName, mainTaskTitle } = data;
+
+    if (!text) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Text is required' 
+      });
+    }
+
+    if (!config.todoistApiToken) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'Server not configured with Todoist token' 
+      });
+    }
+
+    const exporter = new TodoistExporter(config.todoistApiToken);
+    
+    const projects = await exporter.getProjects();
+    const project = projects.find(p => 
+      p.name.toLowerCase() === projectName.toLowerCase() || 
+      (projectName === 'Inbox' && p.is_inbox_project)
+    );
+
+    if (!project) {
+      return res.status(400).json({ 
+        success: false,
+        error: `Project "${projectName}" not found` 
+      });
+    }
+
+    const result = await exporter.exportToTodoist({
+      text,
+      projectId: project.id,
+      mainTaskTitle: mainTaskTitle || `${config.defaultMainTaskPrefix} - ${new Date().toLocaleDateString()}`,
+      priority: config.defaultPriority,
+      autoExtract: true
+    });
+
+    // Return success page instead of JSON for better UX
+    res.send(`
+      <html>
+        <head><title>Export Success</title></head>
+        <body style="font-family: Arial; text-align: center; padding: 50px;">
+          <h1>✅ Export Successful!</h1>
+          <p>Created main task: <strong>${result.mainTask.content}</strong></p>
+          <p>With <strong>${result.summary.successful}</strong> subtasks in <strong>${project.name}</strong></p>
+          <p><a href="https://todoist.com">Open Todoist</a> | <a href="javascript:window.close()">Close</a></p>
+        </body>
+      </html>
+    `);
+
+  } catch (error) {
+    logger.error('GET quick export failed', error);
+    res.status(500).send(`
+      <html>
+        <head><title>Export Failed</title></head>
+        <body style="font-family: Arial; text-align: center; padding: 50px;">
+          <h1>❌ Export Failed</h1>
+          <p>Error: ${error.message}</p>
+          <p><a href="javascript:history.back()">Go Back</a></p>
+        </body>
+      </html>
+    `);
+  }
+});
+
 // Enhanced quick export endpoint (simplified) - replace your existing /quick-export
 app.post('/quick-export', async (req, res) => {
   try {
