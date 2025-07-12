@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  claude-todoist-api:
+    image: f00lycooly/claude-todoist-api:latest
+    container_name: claude-todoist-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"  # Bind to localhost only (behind reverse proxy)
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - RATE_LIMIT_WINDOW=15
+      - RATE_LIMIT_MAX=200
+      - CORS_ORIGIN=https://your-domain.com
+      - LOG_LEVEL=info
+      - DEFAULT_PROJECT_NAME=Inbox
+      - DEFAULT_PRIORITY=2
+      - TRUSTED_PROXIES=172.18.0.0/16,10.0.0.0/8,127.0.0.1
+    volumes:
+      - ./logs:/app/logs:rw
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - claude-todoist-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  claude-todoist-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+
+volumes:
+  logs:
+    driver: local
