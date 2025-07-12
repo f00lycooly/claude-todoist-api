@@ -626,7 +626,76 @@ app.post('/export', async (req, res) => {
   }
 });
 
-["GET /health","GET /info","POST /validate-token","POST /projects","POST /extract-actions","POST /export","POST /quick-export"]
+// Enhanced quick export endpoint (simplified) - replace your existing /quick-export
+app.post('/quick-export', async (req, res) => {
+  try {
+    const { 
+      token: requestToken, 
+      text, 
+      projectName = config.defaultProjectName,
+      mainTaskTitle  // ← Added custom title support
+    } = req.body;
+
+    let token;
+    
+    try {
+      token = getValidToken(requestToken);
+    } catch (error) {
+      return res.status(400).json({ 
+        success: false,
+        error: error.message
+      });
+    }
+
+    if (!text) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Text is required' 
+      });
+    }
+
+    const exporter = new TodoistExporter(token);
+    
+    // Get projects and find the specified one
+    const projects = await exporter.getProjects();
+    const project = projects.find(p => 
+      p.name.toLowerCase() === projectName.toLowerCase() || 
+      (projectName === 'Inbox' && p.is_inbox_project)
+    );
+
+    if (!project) {
+      return res.status(400).json({ 
+        success: false,
+        error: `Project "${projectName}" not found. Available projects: ${projects.map(p => p.name).join(', ')}` 
+      });
+    }
+
+    const result = await exporter.exportToTodoist({
+      text,
+      projectId: project.id,
+      mainTaskTitle: mainTaskTitle || `${config.defaultMainTaskPrefix} - ${new Date().toLocaleDateString()}`, // ← Use custom title or default
+      priority: config.defaultPriority,
+      autoExtract: true
+    });
+
+    res.json({
+      success: true,
+      mainTaskId: result.mainTask.id,
+      subtaskCount: result.summary.successful,
+      projectName: project.name,
+      message: `Exported to ${project.name}: 1 main task with ${result.summary.successful} subtasks`,
+      failures: result.failures,
+      tokenSource: requestToken ? 'request' : 'environment'
+    });
+
+  } catch (error) {
+    logger.error('Quick export failed', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
 
 // Error handling middleware
 app.use((error, req, res, next) => {
