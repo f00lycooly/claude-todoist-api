@@ -1,4 +1,5 @@
 // src/server.js - Enhanced for GitHub deployment with reverse proxy support
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -8,7 +9,6 @@ const fs = require('fs');
 
 const app = express();
 
-// Configuration with environment variable support
 const config = {
   port: process.env.PORT || 3000,
   nodeEnv: process.env.NODE_ENV || 'development',
@@ -21,9 +21,20 @@ const config = {
   defaultMainTaskPrefix: process.env.DEFAULT_MAIN_TASK_PREFIX || 'Claude Actions',
   healthCheckTimeout: parseInt(process.env.HEALTH_CHECK_TIMEOUT) || 5000,
   trustedProxies: process.env.TRUSTED_PROXIES || '',
-  version: process.env.npm_package_version || '1.0.0'
+  version: process.env.npm_package_version || '1.0.0',
+  // Add default Todoist token support
+  todoistApiToken: process.env.TODOIST_API_TOKEN || null
 };
-
+const getValidToken = (requestToken) => {
+  // Use token from request if provided, otherwise use environment token
+  const token = requestToken || config.todoistApiToken;
+  
+  if (!token) {
+    throw new Error('Todoist API token is required. Provide in request body or set TODOIST_API_TOKEN environment variable.');
+  }
+  
+  return token;
+};
 // Trust proxy setup for reverse proxy deployments
 if (config.trustedProxies) {
   const proxies = config.trustedProxies.split(',').map(p => p.trim());
@@ -60,7 +71,7 @@ const createLogger = () => {
   
   return {
     info: (message, meta = {}) => writeLog('info', message, meta),
-    error: (message, error = {}) => writeLog('error', message, {
+    error: (message, error = {}, meta = {}) => writeLog('error', message, {
       error: error.message || error,
       stack: error.stack,
       ...meta
@@ -424,15 +435,16 @@ app.get('/info', (req, res) => {
   });
 });
 
-// Validate Todoist token
 app.post('/validate-token', async (req, res) => {
   try {
-    const { token } = req.body;
+    let token;
     
-    if (!token) {
+    try {
+      token = getValidToken(req.body.token);
+    } catch (error) {
       return res.status(400).json({ 
         success: false,
-        error: 'API token is required' 
+        error: error.message
       });
     }
 
@@ -442,13 +454,15 @@ app.post('/validate-token', async (req, res) => {
     if (validation.valid) {
       logger.info('Token validation successful', { 
         projectCount: validation.projects.length,
-        ip: req.ip 
+        ip: req.ip,
+        tokenSource: req.body.token ? 'request' : 'environment'
       });
       res.json({
         success: true,
         valid: true,
         projectCount: validation.projects.length,
-        projects: validation.projects
+        projects: validation.projects,
+        tokenSource: req.body.token ? 'request' : 'environment'
       });
     } else {
       logger.warn('Token validation failed', { 
@@ -473,12 +487,14 @@ app.post('/validate-token', async (req, res) => {
 // Get user's projects
 app.post('/projects', async (req, res) => {
   try {
-    const { token } = req.body;
+    let token;
     
-    if (!token) {
+    try {
+      token = getValidToken(req.body.token);
+    } catch (error) {
       return res.status(400).json({ 
         success: false,
-        error: 'API token is required' 
+        error: error.message
       });
     }
 
@@ -487,7 +503,8 @@ app.post('/projects', async (req, res) => {
     
     logger.info('Projects retrieved', { 
       count: projects.length,
-      ip: req.ip 
+      ip: req.ip,
+      tokenSource: req.body.token ? 'request' : 'environment'
     });
     
     res.json({ 
@@ -542,7 +559,7 @@ app.post('/extract-actions', (req, res) => {
 app.post('/export', async (req, res) => {
   try {
     const {
-      token,
+      token: requestToken,
       text,
       mainTaskTitle,
       projectId,
@@ -553,11 +570,14 @@ app.post('/export', async (req, res) => {
       manualActions
     } = req.body;
 
-    // Validation
-    if (!token) {
+    let token;
+    
+    try {
+      token = getValidToken(requestToken);
+    } catch (error) {
       return res.status(400).json({ 
         success: false,
-        error: 'Todoist API token is required' 
+        error: error.message
       });
     }
 
@@ -593,7 +613,8 @@ app.post('/export', async (req, res) => {
       message: `Successfully created main task with ${result.summary.successful} subtasks`,
       mainTaskId: result.mainTask.id,
       subtaskCount: result.summary.successful,
-      failures: result.failures
+      failures: result.failures,
+      tokenSource: requestToken ? 'request' : 'environment'
     });
 
   } catch (error) {
@@ -605,15 +626,29 @@ app.post('/export', async (req, res) => {
   }
 });
 
-// Quick export endpoint (simplified)
 app.post('/quick-export', async (req, res) => {
   try {
-    const { token, text, projectName = config.defaultProjectName } = req.body;
+    const { 
+      token: requestToken, 
+      text, 
+      projectName = config.defaultProjectName 
+    } = req.body;
 
-    if (!token || !text) {
+    let token;
+    
+    try {
+      token = getValidToken(requestToken);
+    } catch (error) {
       return res.status(400).json({ 
         success: false,
-        error: 'Token and text are required' 
+        error: error.message
+      });
+    }
+
+    if (!text) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Text is required' 
       });
     }
 
@@ -647,11 +682,76 @@ app.post('/quick-export', async (req, res) => {
       subtaskCount: result.summary.successful,
       projectName: project.name,
       message: `Exported to ${project.name}: 1 main task with ${result.summary.successful} subtasks`,
-      failures: result.failures
+      failures: result.failures,
+      tokenSource: requestToken ? 'request' : 'environment'
     });
 
   } catch (error) {
     logger.error('Quick export failed', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// Add a new simplified endpoint for personal use (add this after quick-export)
+
+app.post('/simple-export', async (req, res) => {
+  try {
+    const { text, projectName, mainTaskTitle } = req.body;
+
+    if (!text) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Text is required' 
+      });
+    }
+
+    if (!config.todoistApiToken) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'Server not configured with Todoist token. Please set TODOIST_API_TOKEN environment variable.' 
+      });
+    }
+
+    const exporter = new TodoistExporter(config.todoistApiToken);
+    
+    // Get projects and find the specified one
+    const projects = await exporter.getProjects();
+    const targetProjectName = projectName || config.defaultProjectName;
+    const project = projects.find(p => 
+      p.name.toLowerCase() === targetProjectName.toLowerCase() || 
+      (targetProjectName === 'Inbox' && p.is_inbox_project)
+    );
+
+    if (!project) {
+      return res.status(400).json({ 
+        success: false,
+        error: `Project "${targetProjectName}" not found. Available projects: ${projects.map(p => p.name).join(', ')}` 
+      });
+    }
+
+    const result = await exporter.exportToTodoist({
+      text,
+      projectId: project.id,
+      mainTaskTitle: mainTaskTitle || `${config.defaultMainTaskPrefix} - ${new Date().toLocaleDateString()}`,
+      priority: config.defaultPriority,
+      autoExtract: true
+    });
+
+    res.json({
+      success: true,
+      mainTaskId: result.mainTask.id,
+      subtaskCount: result.summary.successful,
+      projectName: project.name,
+      message: `Exported to ${project.name}: 1 main task with ${result.summary.successful} subtasks`,
+      failures: result.failures,
+      tokenSource: 'environment'
+    });
+
+  } catch (error) {
+    logger.error('Simple export failed', error);
     res.status(500).json({ 
       success: false,
       error: error.message 
