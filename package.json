@@ -1,0 +1,51 @@
+{
+  "name": "claude-todoist-api",
+  "version": "1.0.0",
+  "description": "RESTful API for exporting Claude chat actions to Todoist with smart extraction",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "docker:build": "docker build -t claude-todoist-api .",
+    "docker:run": "docker run -p 3000:3000 claude-todoist-api",
+    "docker:compose": "docker-compose up -d",
+    "docker:compose:prod": "docker-compose -f docker-compose.prod.yml up -d"
+  },
+  "keywords": [
+    "todoist",
+    "claude",
+    "api",
+    "tasks",
+    "productivity",
+    "ai",
+    "automation",
+    "docker"
+  ],
+  "author": "f00lycooly",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/f00lycooly/claude-todoist-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/f00lycooly/claude-todoist-api/issues"
+  },
+  "homepage": "https://github.com/f00lycooly/claude-todoist-api#readme",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.0",
+    "express-rate-limit": "^7.1.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  }
+}
