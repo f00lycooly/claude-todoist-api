@@ -25,6 +25,7 @@ const config = {
   // Add default Todoist token support
   todoistApiToken: process.env.TODOIST_API_TOKEN || null
 };
+
 const getValidToken = (requestToken) => {
   // Use token from request if provided, otherwise use environment token
   const token = requestToken || config.todoistApiToken;
@@ -35,6 +36,113 @@ const getValidToken = (requestToken) => {
   
   return token;
 };
+
+// Date parsing helper function
+const parseDueDate = (dateInput) => {
+  if (!dateInput) return null;
+  
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  
+  // Normalize input
+  const input = dateInput.toLowerCase().trim();
+  
+  // Handle relative dates
+  if (input === 'today') {
+    return today.toISOString().split('T')[0];
+  }
+  
+  if (input === 'tomorrow') {
+    return tomorrow.toISOString().split('T')[0];
+  }
+  
+  // Handle "in X days"
+  const inDaysMatch = input.match(/in (\d+) days?/);
+  if (inDaysMatch) {
+    const days = parseInt(inDaysMatch[1]);
+    const futureDate = new Date(today);
+    futureDate.setDate(futureDate.getDate() + days);
+    return futureDate.toISOString().split('T')[0];
+  }
+  
+  // Handle "this week" (Friday)
+  if (input.includes('this week') || input.includes('end of week')) {
+    const friday = new Date(today);
+    friday.setDate(today.getDate() + (5 - today.getDay()));
+    return friday.toISOString().split('T')[0];
+  }
+  
+  // Handle "next week" (next Monday)
+  if (input.includes('next week')) {
+    const nextMonday = new Date(today);
+    nextMonday.setDate(today.getDate() + (8 - today.getDay()));
+    return nextMonday.toISOString().split('T')[0];
+  }
+  
+  // Handle day names
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const dayMatch = dayNames.find(day => input.includes(day));
+  if (dayMatch) {
+    const targetDay = dayNames.indexOf(dayMatch);
+    const currentDay = today.getDay();
+    let daysToAdd = targetDay - currentDay;
+    
+    // If the day has passed this week, get next week's occurrence
+    if (daysToAdd <= 0) {
+      daysToAdd += 7;
+    }
+    
+    const targetDate = new Date(today);
+    targetDate.setDate(today.getDate() + daysToAdd);
+    return targetDate.toISOString().split('T')[0];
+  }
+  
+  // Handle YYYY-MM-DD format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+    return dateInput;
+  }
+  
+  // Try to parse other date formats
+  try {
+    const parsed = new Date(dateInput);
+    if (!isNaN(parsed)) {
+      return parsed.toISOString().split('T')[0];
+    }
+  } catch (e) {
+    // Ignore parsing errors
+  }
+  
+  return null;
+};
+
+// Priority validation helper
+const validatePriority = (priority) => {
+  if (!priority) return 3; // Default normal priority
+  
+  const p = parseInt(priority);
+  if (p >= 1 && p <= 4) {
+    return p;
+  }
+  
+  return 3; // Default to normal if invalid
+};
+
+// Labels parsing helper
+const parseLabels = (labels) => {
+  if (!labels) return [];
+  
+  if (Array.isArray(labels)) {
+    return labels.filter(label => typeof label === 'string' && label.trim().length > 0);
+  }
+  
+  if (typeof labels === 'string') {
+    return labels.split(',').map(l => l.trim()).filter(l => l.length > 0);
+  }
+  
+  return [];
+};
+
 // Trust proxy setup for reverse proxy deployments
 if (config.trustedProxies) {
   const proxies = config.trustedProxies.split(',').map(p => p.trim());
@@ -415,6 +523,9 @@ app.get('/info', (req, res) => {
     features: [
       'Smart action extraction',
       'Todoist integration',
+      'Date parsing',
+      'Priority levels',
+      'Project routing',
       'Rate limiting',
       'Health monitoring',
       'Docker support',
@@ -424,15 +535,48 @@ app.get('/info', (req, res) => {
     endpoints: {
       'GET /health': 'Health check',
       'GET /info': 'System information',
+      'GET /projects-list': 'Available projects list',
       'POST /validate-token': 'Validate Todoist token',
       'POST /projects': 'Get user projects',
       'POST /extract-actions': 'Extract actions from text',
       'POST /export': 'Full export with options',
-      'POST /quick-export': 'Simple export to default project'
+      'GET /quick-export': 'Clickable link export',
+      'POST /quick-export': 'Enhanced quick export'
     },
     github: 'https://github.com/f00lycooly/claude-todoist-api',
     documentation: 'https://github.com/f00lycooly/claude-todoist-api/blob/main/docs/api-reference.md'
   });
+});
+
+// Add endpoint to get available projects (for Claude to reference)
+app.get('/projects-list', async (req, res) => {
+  try {
+    if (!config.todoistApiToken) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'Server not configured with Todoist token' 
+      });
+    }
+
+    const exporter = new TodoistExporter(config.todoistApiToken);
+    const projects = await exporter.getProjects();
+    
+    res.json({
+      success: true,
+      projects: projects.map(p => ({
+        id: p.id,
+        name: p.name,
+        isInbox: p.is_inbox_project || false
+      }))
+    });
+
+  } catch (error) {
+    logger.error('Failed to get projects list', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
 });
 
 app.post('/validate-token', async (req, res) => {
@@ -626,94 +770,17 @@ app.post('/export', async (req, res) => {
   }
 });
 
-// Add GET endpoint for clickable links
-app.get('/quick-export', async (req, res) => {
-  try {
-    if (!req.query.data) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Missing data parameter' 
-      });
-    }
-
-    const data = JSON.parse(decodeURIComponent(req.query.data));
-    
-    // Use same logic as POST endpoint
-    const { text, projectName = config.defaultProjectName, mainTaskTitle } = data;
-
-    if (!text) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Text is required' 
-      });
-    }
-
-    if (!config.todoistApiToken) {
-      return res.status(500).json({ 
-        success: false,
-        error: 'Server not configured with Todoist token' 
-      });
-    }
-
-    const exporter = new TodoistExporter(config.todoistApiToken);
-    
-    const projects = await exporter.getProjects();
-    const project = projects.find(p => 
-      p.name.toLowerCase() === projectName.toLowerCase() || 
-      (projectName === 'Inbox' && p.is_inbox_project)
-    );
-
-    if (!project) {
-      return res.status(400).json({ 
-        success: false,
-        error: `Project "${projectName}" not found` 
-      });
-    }
-
-    const result = await exporter.exportToTodoist({
-      text,
-      projectId: project.id,
-      mainTaskTitle: mainTaskTitle || `${config.defaultMainTaskPrefix} - ${new Date().toLocaleDateString()}`,
-      priority: config.defaultPriority,
-      autoExtract: true
-    });
-
-    // Return success page instead of JSON for better UX
-    res.send(`
-      <html>
-        <head><title>Export Success</title></head>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-          <h1>✅ Export Successful!</h1>
-          <p>Created main task: <strong>${result.mainTask.content}</strong></p>
-          <p>With <strong>${result.summary.successful}</strong> subtasks in <strong>${project.name}</strong></p>
-          <p><a href="https://todoist.com">Open Todoist</a> | <a href="javascript:window.close()">Close</a></p>
-        </body>
-      </html>
-    `);
-
-  } catch (error) {
-    logger.error('GET quick export failed', error);
-    res.status(500).send(`
-      <html>
-        <head><title>Export Failed</title></head>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-          <h1>❌ Export Failed</h1>
-          <p>Error: ${error.message}</p>
-          <p><a href="javascript:history.back()">Go Back</a></p>
-        </body>
-      </html>
-    `);
-  }
-});
-
-// Enhanced quick export endpoint (simplified) - replace your existing /quick-export
+// Enhanced POST quick-export endpoint
 app.post('/quick-export', async (req, res) => {
   try {
     const { 
       token: requestToken, 
       text, 
       projectName = config.defaultProjectName,
-      mainTaskTitle  // ← Added custom title support
+      mainTaskTitle,
+      priority,
+      dueDate,
+      labels
     } = req.body;
 
     let token;
@@ -750,11 +817,18 @@ app.post('/quick-export', async (req, res) => {
       });
     }
 
+    // Parse enhanced parameters
+    const parsedDueDate = parseDueDate(dueDate);
+    const validatedPriority = validatePriority(priority);
+    const parsedLabels = parseLabels(labels);
+
     const result = await exporter.exportToTodoist({
       text,
       projectId: project.id,
-      mainTaskTitle: mainTaskTitle || `${config.defaultMainTaskPrefix} - ${new Date().toLocaleDateString()}`, // ← Use custom title or default
-      priority: config.defaultPriority,
+      mainTaskTitle: mainTaskTitle || `${config.defaultMainTaskPrefix} - ${new Date().toLocaleDateString()}`,
+      priority: validatedPriority,
+      dueDate: parsedDueDate,
+      labels: parsedLabels,
       autoExtract: true
     });
 
@@ -763,6 +837,9 @@ app.post('/quick-export', async (req, res) => {
       mainTaskId: result.mainTask.id,
       subtaskCount: result.summary.successful,
       projectName: project.name,
+      priority: validatedPriority,
+      dueDate: parsedDueDate,
+      labels: parsedLabels,
       message: `Exported to ${project.name}: 1 main task with ${result.summary.successful} subtasks`,
       failures: result.failures,
       tokenSource: requestToken ? 'request' : 'environment'
@@ -774,6 +851,151 @@ app.post('/quick-export', async (req, res) => {
       success: false,
       error: error.message 
     });
+  }
+});
+
+// Enhanced GET quick-export endpoint for clickable links
+app.get('/quick-export', async (req, res) => {
+  try {
+    if (!req.query.data) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing data parameter' 
+      });
+    }
+
+    const data = JSON.parse(decodeURIComponent(req.query.data));
+    
+    const { 
+      text, 
+      projectName = config.defaultProjectName, 
+      mainTaskTitle,
+      priority,
+      dueDate,
+      labels
+    } = data;
+
+    if (!text) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Text is required' 
+      });
+    }
+
+    if (!config.todoistApiToken) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'Server not configured with Todoist token' 
+      });
+    }
+
+    const exporter = new TodoistExporter(config.todoistApiToken);
+    
+    const projects = await exporter.getProjects();
+    const project = projects.find(p => 
+      p.name.toLowerCase() === projectName.toLowerCase() || 
+      (projectName === 'Inbox' && p.is_inbox_project)
+    );
+
+    if (!project) {
+      return res.status(400).json({ 
+        success: false,
+        error: `Project "${projectName}" not found` 
+      });
+    }
+
+    // Parse enhanced parameters
+    const parsedDueDate = parseDueDate(dueDate);
+    const validatedPriority = validatePriority(priority);
+    const parsedLabels = parseLabels(labels);
+
+    const result = await exporter.exportToTodoist({
+      text,
+      projectId: project.id,
+      mainTaskTitle: mainTaskTitle || `${config.defaultMainTaskPrefix} - ${new Date().toLocaleDateString()}`,
+      priority: validatedPriority,
+      dueDate: parsedDueDate,
+      labels: parsedLabels,
+      autoExtract: true
+    });
+
+    // Enhanced success page with more details
+    const priorityEmoji = ['🔴', '🟡', '🟢', '🔵'][validatedPriority - 1];
+    const dueDateText = parsedDueDate ? `Due: ${parsedDueDate}` : 'No due date';
+    const labelsText = parsedLabels.length > 0 ? `Labels: ${parsedLabels.join(', ')}` : '';
+
+    res.send(`
+      <html>
+        <head>
+          <title>Export Success</title>
+          <style>
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+              text-align: center; 
+              padding: 50px; 
+              background: #f8f9fa;
+              color: #333;
+            }
+            .container { 
+              max-width: 500px; 
+              margin: 0 auto; 
+              background: white; 
+              padding: 40px; 
+              border-radius: 12px; 
+              box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            }
+            .success { color: #28a745; font-size: 2em; margin-bottom: 20px; }
+            .task-info { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: left; }
+            .links { margin-top: 30px; }
+            .links a { 
+              display: inline-block; 
+              margin: 0 10px; 
+              padding: 12px 24px; 
+              background: #007bff; 
+              color: white; 
+              text-decoration: none; 
+              border-radius: 6px;
+              transition: background-color 0.2s;
+            }
+            .links a:hover { background: #0056b3; }
+            .links a.secondary { background: #6c757d; }
+            .links a.secondary:hover { background: #545b62; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="success">✅ Export Successful!</div>
+            
+            <div class="task-info">
+              <strong>Main Task:</strong> ${result.mainTask.content}<br>
+              <strong>Project:</strong> ${project.name}<br>
+              <strong>Subtasks:</strong> ${result.summary.successful}<br>
+              <strong>Priority:</strong> ${priorityEmoji} Level ${validatedPriority}<br>
+              <strong>${dueDateText}</strong><br>
+              ${labelsText ? `<strong>${labelsText}</strong>` : ''}
+            </div>
+            
+            <div class="links">
+              <a href="https://todoist.com" target="_blank">📱 Open Todoist</a>
+              <a href="javascript:window.close()" class="secondary">✖️ Close</a>
+            </div>
+          </div>
+        </body>
+      </html>
+    `);
+
+  } catch (error) {
+    logger.error('GET quick export failed', error);
+    res.status(500).send(`
+      <html>
+        <head><title>Export Failed</title></head>
+        <body style="font-family: Arial; text-align: center; padding: 50px;">
+          <h1>❌ Export Failed</h1>
+          <p>Error: ${error.message}</p>
+          <p><a href="javascript:history.back()">Go Back</a></p>
+        </body>
+      </html>
+    `);
   }
 });
 
@@ -800,10 +1022,12 @@ app.use((req, res) => {
     availableEndpoints: [
       'GET /health',
       'GET /info', 
+      'GET /projects-list',
       'POST /validate-token',
       'POST /projects',
       'POST /extract-actions',
       'POST /export',
+      'GET /quick-export',
       'POST /quick-export'
     ]
   });
